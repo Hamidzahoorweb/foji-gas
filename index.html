@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Foji Gas — Shop Management</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- SIDEBAR -->
+<aside class="sidebar" id="sidebar">
+  <div class="sidebar-brand">
+    <div class="brand-icon">⛽</div>
+    <div>
+      <div class="brand-name">FOJI GAS</div>
+      <div class="brand-sub">Shop Management</div>
+    </div>
+  </div>
+  <nav class="sidebar-nav">
+    <a href="#" class="nav-link active" data-page="dashboard">
+      <span class="nav-icon">📊</span> Dashboard
+    </a>
+    <a href="#" class="nav-link" data-page="stock">
+      <span class="nav-icon">🛢️</span> Cylinder Stock
+    </a>
+    <a href="#" class="nav-link" data-page="cylinders">
+      <span class="nav-icon">🔢</span> Cylinder Inventory
+    </a>
+    <a href="#" class="nav-link" data-page="sales">
+      <span class="nav-icon">💰</span> Sales Entry
+    </a>
+    <a href="#" class="nav-link" data-page="parts">
+      <span class="nav-icon">🔧</span> Parts Sales
+    </a>
+    <a href="#" class="nav-link" data-page="expenses">
+      <span class="nav-icon">📋</span> Expenses
+    </a>
+    <a href="#" class="nav-link" data-page="reports">
+      <span class="nav-icon">📈</span> Reports
+    </a>
+    <a href="#" class="nav-link" data-page="history">
+      <span class="nav-icon">🗂️</span> History
+    </a>
+    <a href="#" class="nav-link" data-page="sync">
+      <span class="nav-icon">☁️</span> Cloud Sync
+    </a>
+  </nav>
+  <div class="sidebar-footer">
+    <div class="today-date" id="todayDate"></div>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<div class="main-wrap">
+  <header class="topbar">
+    <button class="menu-toggle" id="menuToggle">☰</button>
+    <h1 class="page-title" id="pageTitle">Dashboard</h1>
+    <div class="topbar-right">
+      <span id="syncBadge" class="sync-badge">☁ Sync</span>
+      <span class="badge-live">● LIVE</span>
+    </div>
+  </header>
+
+  <main class="content" id="content">
+    <!-- Pages injected by JS -->
+  </main>
+</div>
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal" id="modal">
+    <div class="modal-header">
+      <h2 id="modalTitle">Form</h2>
+      <button class="modal-close" id="modalClose">✕</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<script src="db.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
