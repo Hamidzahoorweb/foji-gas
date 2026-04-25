@@ -97,48 +97,52 @@ const DB = {
 
     // Push local → cloud
     async push() {
-      if (this._syncing) { this._pendingSave = true; return; }
-      this._syncing = true;
-      DB._updateSyncBadge('saving');
+  if (this._syncing) { this._pendingSave = true; return; }
+  this._syncing = true;
+  DB._updateSyncBadge('saving');
 
-      try {
-        const payload = JSON.stringify(this.exportAll());
-        const code = this.getShopCode();
+  try {
+    const payload = JSON.stringify(this.exportAll());
+    const code = this.getShopCode();
 
-        if (code) {
-          // Update existing blob
-          const res = await fetch(`${this.API}/${code}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: payload
-          });
-          if (!res.ok) throw new Error('Save failed');
-        } else {
-          // First ever save — create new blob
-          const res = await fetch(this.API, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-            body: payload
-          });
-          if (!res.ok) throw new Error('Create failed');
-          const location = res.headers.get('Location') || '';
-          const newCode = location.split('/').pop();
-          this.setShopCode(newCode);
-        }
-
-        localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
-        DB._updateSyncBadge('saved');
-      } catch (err) {
-        console.warn('Auto-save failed:', err.message);
-        DB._updateSyncBadge('error');
-      } finally {
-        this._syncing = false;
-        if (this._pendingSave) {
-          this._pendingSave = false;
-          this.push();
-        }
+    if (code) {
+      const res = await fetch(`${this.API}/${code}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: payload
+      });
+      if (!res.ok) throw new Error('Save failed');
+    } else {
+      const res = await fetch(this.API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+        body: payload
+      });
+      if (!res.ok) throw new Error('Create failed');
+      // Fix: extract ID from the Location header URL
+      const location = res.headers.get('Location') || res.url || '';
+      const parts = location.split('/');
+      const newCode = parts[parts.length - 1] || parts[parts.length - 2] || '';
+      if (newCode) {
+        this.setShopCode(newCode);
+      } else {
+        throw new Error('Could not get sync code from server');
       }
-    },
+    }
+
+    localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
+    DB._updateSyncBadge('saved');
+  } catch (err) {
+    console.warn('Auto-save failed:', err.message);
+    DB._updateSyncBadge('error');
+  } finally {
+    this._syncing = false;
+    if (this._pendingSave) {
+      this._pendingSave = false;
+      this.push();
+    }
+  }
+},
 
     // Pull cloud → local (on app load)
     async pull(code) {
