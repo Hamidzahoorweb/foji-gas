@@ -710,3 +710,129 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,107,0,0.3); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--flame); }
+
+/* ===== LOGIN SCREEN ===== */
+.login-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--coal);
+  z-index: 99999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Barlow', sans-serif;
+}
+
+.login-box {
+  background: var(--steel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 40px 36px;
+  width: 90%;
+  max-width: 380px;
+  box-shadow: 0 8px 40px rgba(0,0,0,0.6);
+  animation: slideIn 0.3s ease;
+}
+
+.login-brand {
+  text-align: center;
+  margin-bottom: 32px;
+}
+
+.login-brand-icon {
+  font-size: 48px;
+  filter: drop-shadow(0 0 12px var(--flame));
+  display: block;
+  margin-bottom: 10px;
+}
+
+.login-brand-name {
+  font-family: 'Bebas Neue', sans-serif;
+  font-size: 32px;
+  letter-spacing: 3px;
+  color: var(--flame);
+  line-height: 1;
+}
+
+.login-brand-sub {
+  font-size: 11px;
+  color: var(--silver-dim);
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin-top: 4px;
+}
+
+.login-form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.login-form-group label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--silver-dim);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.login-form-group input {
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--white);
+  font-family: 'Barlow', sans-serif;
+  font-size: 15px;
+  padding: 12px 16px;
+  outline: none;
+  transition: border 0.2s;
+  width: 100%;
+}
+
+.login-form-group input:focus {
+  border-color: var(--flame);
+}
+
+.login-btn {
+  width: 100%;
+  padding: 13px;
+  background: var(--flame);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  font-family: 'Barlow', sans-serif;
+  font-size: 15px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: background 0.2s, transform 0.1s;
+}
+
+.login-btn:hover {
+  background: var(--flame-light);
+  transform: translateY(-1px);
+}
+
+.login-btn:active {
+  transform: translateY(0);
+}
+
+.login-error {
+  background: rgba(255,77,77,0.12);
+  border: 1px solid rgba(255,77,77,0.3);
+  color: var(--red);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-size: 13px;
+  margin-top: 12px;
+  display: none;
+  text-align: center;
+}
+
+.login-error.show {
+  display: block;
+  animation: slideIn 0.2s ease;
+}
