@@ -42,8 +42,6 @@ const Auth = {
         </div>
       </div>
     `;
-
-    // Allow Enter key to submit
     document.getElementById('login_pass').addEventListener('keydown', e => {
       if (e.key === 'Enter') Auth.attemptLogin();
     });
@@ -67,12 +65,34 @@ const Auth = {
   }
 };
 
-// ===== BOOT — Check auth before anything =====
-document.addEventListener('DOMContentLoaded', () => {
+// ===== BOOT =====
+document.addEventListener('DOMContentLoaded', async () => {
+  // 1. Auth check
   if (!Auth.isLoggedIn()) {
     Auth.showLoginScreen();
-    return; // stop — don't run App.init()
+    return;
   }
+
+  // 2. Show loading while fetching cloud data
+  const content = document.getElementById('content');
+  if (content) {
+    content.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:60vh;gap:16px;color:var(--silver-dim)">
+        <div style="font-size:40px;animation:pulse 1.5s infinite">☁</div>
+        <div style="font-family:'Barlow Condensed',sans-serif;font-size:18px;letter-spacing:1px;text-transform:uppercase">Loading shop data…</div>
+        <div style="font-size:13px">Syncing from cloud, please wait</div>
+      </div>
+    `;
+  }
+
+  // 3. Pull latest from cloud before rendering
+  try {
+    await DB.CloudSync.loadOnBoot();
+  } catch (e) {
+    console.warn('Boot sync failed, using local data:', e);
+  }
+
+  // 4. Init app with fresh data
   App.init();
 });
 
@@ -154,19 +174,11 @@ const App = {
   setContent(html) { document.getElementById('content').innerHTML = html; },
 
   // ======================== SYNC BADGE ========================
-  initSyncBadge() {
-    const code = DB.Sync.getSyncCode();
-    const badge = document.getElementById('syncBadge');
-    if (!badge) return;
-    if (code) {
-      badge.textContent = '☁ Synced';
-      badge.className = 'sync-badge synced';
-    } else {
-      badge.textContent = '☁ Sync';
-      badge.className = 'sync-badge';
-    }
-    badge.onclick = () => this.navigate('sync');
-  },
+initSyncBadge() {
+  DB._updateSyncBadge(DB.CloudSync.getShopCode() ? 'saved': 'loading');
+  const badge = document.getElementById('syncBadge');
+  if (badge) badge.onclick = () => this.navigate('sync');
+},
 
   // ======================== DASHBOARD ========================
   renderDashboard() {
