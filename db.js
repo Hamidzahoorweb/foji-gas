@@ -1,5 +1,4 @@
-// ===== FOJI GAS — DATABASE v4 (Auto Cloud Sync) =====
-// All data lives in ONE cloud blob. Every write auto-saves. Every page load auto-fetches.
+// ===== FOJI GAS — DATABASE v4 (Auto Cloud Sync via JSONBin.io) =====
 
 const DB = {
   KEYS: {
@@ -12,12 +11,7 @@ const DB = {
     lastSync: 'fg_last_sync',
   },
 
-  // ---- FIXED SYNC CODE FOR THIS SHOP ----
-  // This is the one shared blob for all devices. Generated once, hardcoded here.
-  // On first ever run it creates a new blob and saves the code to localStorage.
   SHOP_SYNC_KEY: 'fg_shop_id',
-
-  // ---- IN-MEMORY CACHE (fast reads, avoids repeated localStorage calls) ----
   _cache: {},
 
   _get(key) {
@@ -44,10 +38,12 @@ const DB = {
   },
 
   // ============================
-  // CLOUD SYNC — AUTO
+  // CLOUD SYNC — JSONBin.io
   // ============================
   CloudSync: {
-    API: 'https://jsonblob.com/api/jsonBlob',
+    API: 'https://api.jsonbin.io/v3/b',
+    API_KEY: '$2a$10$mvppWo7kGrTtUAY2BUCfzumQ7qR7HzUL8HvT.04YMaG0XcdYd.qq2',
+
     _saveTimer: null,
     _syncing: false,
     _pendingSave: false,
@@ -58,11 +54,9 @@ const DB = {
 
     setShopCode(code) {
       localStorage.setItem(DB.SHOP_SYNC_KEY, code);
-      // Also set legacy key for the sync page UI
       localStorage.setItem(DB.KEYS.syncCode, code);
     },
 
-    // Export all local data as a single object
     exportAll() {
       return {
         stock:       localStorage.getItem(DB.KEYS.stock),
@@ -76,7 +70,6 @@ const DB = {
       };
     },
 
-    // Write all data from a cloud snapshot into localStorage
     importAll(data) {
       if (data.stock)       localStorage.setItem(DB.KEYS.stock,     data.stock);
       if (data.sales)       localStorage.setItem(DB.KEYS.sales,     data.sales);
@@ -85,81 +78,82 @@ const DB = {
       if (data.cylinders)   localStorage.setItem(DB.KEYS.cylinders, data.cylinders);
       if (data.stock_logs)  localStorage.setItem('fg_stock_logs',   data.stock_logs);
       if (data.prev_months) localStorage.setItem('fg_prev_months',  data.prev_months);
-      // Clear cache so next reads come from fresh localStorage
       DB._cache = {};
     },
 
-    // Debounced save — waits 1.5s after last write, then pushes to cloud
     scheduleSave() {
       clearTimeout(this._saveTimer);
       this._saveTimer = setTimeout(() => this.push(), 1500);
     },
 
-    // Push local → cloud
     async push() {
-  if (this._syncing) { this._pendingSave = true; return; }
-  this._syncing = true;
-  DB._updateSyncBadge('saving');
+      if (this._syncing) { this._pendingSave = true; return; }
+      this._syncing = true;
+      DB._updateSyncBadge('saving');
 
-  try {
-    const payload = JSON.stringify(this.exportAll());
-    const code = this.getShopCode();
+      try {
+        const payload = this.exportAll();
+        const code = this.getShopCode();
 
-    if (code) {
-      const res = await fetch(`${this.API}/${code}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: payload
-      });
-      if (!res.ok) throw new Error('Save failed');
-    } else {
-      const res = await fetch(this.API, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-        body: payload
-      });
-      if (!res.ok) throw new Error('Create failed');
-      // Fix: extract ID from the Location header URL
-      const location = res.headers.get('Location') || res.url || '';
-      const parts = location.split('/');
-      const newCode = parts[parts.length - 1] || parts[parts.length - 2] || '';
-      if (newCode) {
-        this.setShopCode(newCode);
-      } else {
-        throw new Error('Could not get sync code from server');
+        if (code) {
+          // Update existing bin
+          const res = await fetch(`${this.API}/${code}`, {
+            method: 'PUT',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Master-Key': this.API_KEY
+            },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error('Update failed: ' + res.status);
+        } else {
+          // Create new bin
+          const res = await fetch(this.API, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-Master-Key': this.API_KEY,
+              'X-Bin-Name': 'FojiGas',
+              'X-Bin-Private': 'false'
+            },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error('Create failed: ' + res.status);
+          const json = await res.json();
+          const newCode = json?.metadata?.id || json?.id || null;
+          if (!newCode) throw new Error('No bin ID returned from server');
+          this.setShopCode(newCode);
+        }
+
+        localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
+        DB._updateSyncBadge('saved');
+      } catch (err) {
+        console.warn('Sync push failed:', err.message);
+        DB._updateSyncBadge('error');
+      } finally {
+        this._syncing = false;
+        if (this._pendingSave) {
+          this._pendingSave = false;
+          this.push();
+        }
       }
-    }
+    },
 
-    localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
-    DB._updateSyncBadge('saved');
-  } catch (err) {
-    console.warn('Auto-save failed:', err.message);
-    DB._updateSyncBadge('error');
-  } finally {
-    this._syncing = false;
-    if (this._pendingSave) {
-      this._pendingSave = false;
-      this.push();
-    }
-  }
-},
-
-    // Pull cloud → local (on app load)
     async pull(code) {
-      const res = await fetch(`${this.API}/${code}`, {
-        headers: { 'Accept': 'application/json' }
+      const res = await fetch(`${this.API}/${code}/latest`, {
+        headers: { 'X-Master-Key': this.API_KEY }
       });
-      if (!res.ok) throw new Error('Not found');
-      const data = await res.json();
+      if (!res.ok) throw new Error('Bin not found: ' + res.status);
+      const json = await res.json();
+      const data = json.record || json;
       this.importAll(data);
       localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
       return data;
     },
 
-    // Called once on app boot — loads latest cloud data before rendering
     async loadOnBoot() {
       const code = this.getShopCode();
-      if (!code) return; // first ever device — no cloud data yet
+      if (!code) return;
       DB._updateSyncBadge('loading');
       try {
         await this.pull(code);
@@ -171,7 +165,6 @@ const DB = {
     }
   },
 
-  // Update the sync badge in the topbar
   _updateSyncBadge(state) {
     const badge = document.getElementById('syncBadge');
     if (!badge) return;
@@ -247,10 +240,7 @@ const DB = {
   // ============================
   Cylinders: {
     getAll() { return DB._get(DB.KEYS.cylinders); },
-
-    getByType(type) {
-      return DB._get(DB.KEYS.cylinders).filter(c => c.type === type);
-    },
+    getByType(type) { return DB._get(DB.KEYS.cylinders).filter(c => c.type === type); },
 
     add(data) {
       const all = DB._get(DB.KEYS.cylinders);
@@ -326,9 +316,9 @@ const DB = {
       DB._set(DB.KEYS.sales, all.filter(r => r.id !== id));
     },
 
-    getByDate(date)          { return DB._get(DB.KEYS.sales).filter(r => r.date === date); },
-    getByMonth(year, month)  { return DB._get(DB.KEYS.sales).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
-    getByYear(year)          { return DB._get(DB.KEYS.sales).filter(r => new Date(r.date).getFullYear() === year); }
+    getByDate(date)         { return DB._get(DB.KEYS.sales).filter(r => r.date === date); },
+    getByMonth(year, month) { return DB._get(DB.KEYS.sales).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
+    getByYear(year)         { return DB._get(DB.KEYS.sales).filter(r => new Date(r.date).getFullYear() === year); }
   },
 
   // ============================
@@ -358,9 +348,9 @@ const DB = {
 
     delete(id) { DB._set(DB.KEYS.parts, DB._get(DB.KEYS.parts).filter(r => r.id !== id)); },
 
-    getByDate(date)          { return DB._get(DB.KEYS.parts).filter(r => r.date === date); },
-    getByMonth(year, month)  { return DB._get(DB.KEYS.parts).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
-    getByYear(year)          { return DB._get(DB.KEYS.parts).filter(r => new Date(r.date).getFullYear() === year); }
+    getByDate(date)         { return DB._get(DB.KEYS.parts).filter(r => r.date === date); },
+    getByMonth(year, month) { return DB._get(DB.KEYS.parts).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
+    getByYear(year)         { return DB._get(DB.KEYS.parts).filter(r => new Date(r.date).getFullYear() === year); }
   },
 
   // ============================
@@ -390,15 +380,14 @@ const DB = {
 
     delete(id) { DB._set(DB.KEYS.expenses, DB._get(DB.KEYS.expenses).filter(r => r.id !== id)); },
 
-    getByDate(date)          { return DB._get(DB.KEYS.expenses).filter(r => r.date === date); },
-    getByMonth(year, month)  { return DB._get(DB.KEYS.expenses).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); }
+    getByDate(date)         { return DB._get(DB.KEYS.expenses).filter(r => r.date === date); },
+    getByMonth(year, month) { return DB._get(DB.KEYS.expenses).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); }
   },
 
   // ============================
-  // LEGACY SYNC (kept so Cloud Sync page still works)
+  // LEGACY SYNC (Cloud Sync page compatibility)
   // ============================
   Sync: {
-    JSONBLOB_API: 'https://jsonblob.com/api/jsonBlob',
     getSyncCode()  { return DB.CloudSync.getShopCode(); },
     getLastSync()  { return localStorage.getItem(DB.KEYS.lastSync) || null; },
     setSyncCode(c) { DB.CloudSync.setShopCode(c); },
