@@ -1,3 +1,81 @@
+// ===== AUTH — Login Gate =====
+const Auth = {
+  CREDENTIALS: { username: 'Adminfoji', password: 'Pwdgoji@0300' },
+  SESSION_KEY: 'fg_auth_session',
+
+  isLoggedIn() {
+    return sessionStorage.getItem(this.SESSION_KEY) === 'ok';
+  },
+
+  login(username, password) {
+    if (username === this.CREDENTIALS.username && password === this.CREDENTIALS.password) {
+      sessionStorage.setItem(this.SESSION_KEY, 'ok');
+      return true;
+    }
+    return false;
+  },
+
+  logout() {
+    sessionStorage.removeItem(this.SESSION_KEY);
+    location.reload();
+  },
+
+  showLoginScreen() {
+    document.body.innerHTML = `
+      <div class="login-overlay" id="loginOverlay">
+        <div class="login-box">
+          <div class="login-brand">
+            <span class="login-brand-icon">⛽</span>
+            <div class="login-brand-name">FOJI GAS</div>
+            <div class="login-brand-sub">Shop Management</div>
+          </div>
+          <div class="login-form-group">
+            <label>Username</label>
+            <input type="text" id="login_user" placeholder="Enter username" autocomplete="username" />
+          </div>
+          <div class="login-form-group">
+            <label>Password</label>
+            <input type="password" id="login_pass" placeholder="Enter password" autocomplete="current-password" />
+          </div>
+          <button class="login-btn" onclick="Auth.attemptLogin()">🔐 Login</button>
+          <div class="login-error" id="loginError">❌ Invalid username or password</div>
+        </div>
+      </div>
+    `;
+
+    // Allow Enter key to submit
+    document.getElementById('login_pass').addEventListener('keydown', e => {
+      if (e.key === 'Enter') Auth.attemptLogin();
+    });
+    document.getElementById('login_user').addEventListener('keydown', e => {
+      if (e.key === 'Enter') document.getElementById('login_pass').focus();
+    });
+  },
+
+  attemptLogin() {
+    const user = document.getElementById('login_user').value.trim();
+    const pass = document.getElementById('login_pass').value;
+    if (Auth.login(user, pass)) {
+      location.reload();
+    } else {
+      const err = document.getElementById('loginError');
+      err.classList.add('show');
+      document.getElementById('login_pass').value = '';
+      document.getElementById('login_pass').focus();
+      setTimeout(() => err.classList.remove('show'), 3000);
+    }
+  }
+};
+
+// ===== BOOT — Check auth before anything =====
+document.addEventListener('DOMContentLoaded', () => {
+  if (!Auth.isLoggedIn()) {
+    Auth.showLoginScreen();
+    return; // stop — don't run App.init()
+  }
+  App.init();
+});
+
 // ===== FOJI GAS — APP v3 =====
 
 const App = {
