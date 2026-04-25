@@ -1198,5 +1198,3 @@ const App = {
     setTimeout(()=>el.remove(),3200);
   }
 };
-
-document.addEventListener('DOMContentLoaded',()=>App.init());
