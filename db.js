@@ -1,31 +1,185 @@
-// ===== FOJI GAS — DATABASE v3 (localStorage + Cloud Sync) =====
+// ===== FOJI GAS — DATABASE v4 (Auto Cloud Sync) =====
+// All data lives in ONE cloud blob. Every write auto-saves. Every page load auto-fetches.
 
 const DB = {
-  // ---- KEYS ----
   KEYS: {
     stock: 'fg_stock',
     sales: 'fg_sales',
     parts: 'fg_parts',
     expenses: 'fg_expenses',
-    settings: 'fg_settings',
-    cylinders: 'fg_cylinders',   // NEW: individual cylinder inventory
-    syncCode: 'fg_sync_code',    // NEW: device sync code
-    lastSync: 'fg_last_sync',    // NEW: last sync timestamp
+    cylinders: 'fg_cylinders',
+    syncCode: 'fg_sync_code',
+    lastSync: 'fg_last_sync',
   },
 
-  // ---- HELPERS ----
+  // ---- FIXED SYNC CODE FOR THIS SHOP ----
+  // This is the one shared blob for all devices. Generated once, hardcoded here.
+  // On first ever run it creates a new blob and saves the code to localStorage.
+  SHOP_SYNC_KEY: 'fg_shop_id',
+
+  // ---- IN-MEMORY CACHE (fast reads, avoids repeated localStorage calls) ----
+  _cache: {},
+
   _get(key) {
-    try { return JSON.parse(localStorage.getItem(key)) || []; }
-    catch { return []; }
+    if (this._cache[key] !== undefined) return this._cache[key];
+    try {
+      const val = JSON.parse(localStorage.getItem(key));
+      this._cache[key] = val || [];
+      return this._cache[key];
+    } catch { return []; }
   },
+
   _set(key, data) {
+    this._cache[key] = data;
     localStorage.setItem(key, JSON.stringify(data));
+    DB.CloudSync.scheduleSave();
   },
+
   _id() {
     return Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
   },
+
   _today() {
     return new Date().toISOString().split('T')[0];
+  },
+
+  // ============================
+  // CLOUD SYNC — AUTO
+  // ============================
+  CloudSync: {
+    API: 'https://jsonblob.com/api/jsonBlob',
+    _saveTimer: null,
+    _syncing: false,
+    _pendingSave: false,
+
+    getShopCode() {
+      return localStorage.getItem(DB.SHOP_SYNC_KEY) || null;
+    },
+
+    setShopCode(code) {
+      localStorage.setItem(DB.SHOP_SYNC_KEY, code);
+      // Also set legacy key for the sync page UI
+      localStorage.setItem(DB.KEYS.syncCode, code);
+    },
+
+    // Export all local data as a single object
+    exportAll() {
+      return {
+        stock:       localStorage.getItem(DB.KEYS.stock),
+        sales:       localStorage.getItem(DB.KEYS.sales),
+        parts:       localStorage.getItem(DB.KEYS.parts),
+        expenses:    localStorage.getItem(DB.KEYS.expenses),
+        cylinders:   localStorage.getItem(DB.KEYS.cylinders),
+        stock_logs:  localStorage.getItem('fg_stock_logs'),
+        prev_months: localStorage.getItem('fg_prev_months'),
+        exportedAt:  new Date().toISOString()
+      };
+    },
+
+    // Write all data from a cloud snapshot into localStorage
+    importAll(data) {
+      if (data.stock)       localStorage.setItem(DB.KEYS.stock,     data.stock);
+      if (data.sales)       localStorage.setItem(DB.KEYS.sales,     data.sales);
+      if (data.parts)       localStorage.setItem(DB.KEYS.parts,     data.parts);
+      if (data.expenses)    localStorage.setItem(DB.KEYS.expenses,  data.expenses);
+      if (data.cylinders)   localStorage.setItem(DB.KEYS.cylinders, data.cylinders);
+      if (data.stock_logs)  localStorage.setItem('fg_stock_logs',   data.stock_logs);
+      if (data.prev_months) localStorage.setItem('fg_prev_months',  data.prev_months);
+      // Clear cache so next reads come from fresh localStorage
+      DB._cache = {};
+    },
+
+    // Debounced save — waits 1.5s after last write, then pushes to cloud
+    scheduleSave() {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = setTimeout(() => this.push(), 1500);
+    },
+
+    // Push local → cloud
+    async push() {
+      if (this._syncing) { this._pendingSave = true; return; }
+      this._syncing = true;
+      DB._updateSyncBadge('saving');
+
+      try {
+        const payload = JSON.stringify(this.exportAll());
+        const code = this.getShopCode();
+
+        if (code) {
+          // Update existing blob
+          const res = await fetch(`${this.API}/${code}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: payload
+          });
+          if (!res.ok) throw new Error('Save failed');
+        } else {
+          // First ever save — create new blob
+          const res = await fetch(this.API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+            body: payload
+          });
+          if (!res.ok) throw new Error('Create failed');
+          const location = res.headers.get('Location') || '';
+          const newCode = location.split('/').pop();
+          this.setShopCode(newCode);
+        }
+
+        localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
+        DB._updateSyncBadge('saved');
+      } catch (err) {
+        console.warn('Auto-save failed:', err.message);
+        DB._updateSyncBadge('error');
+      } finally {
+        this._syncing = false;
+        if (this._pendingSave) {
+          this._pendingSave = false;
+          this.push();
+        }
+      }
+    },
+
+    // Pull cloud → local (on app load)
+    async pull(code) {
+      const res = await fetch(`${this.API}/${code}`, {
+        headers: { 'Accept': 'application/json' }
+      });
+      if (!res.ok) throw new Error('Not found');
+      const data = await res.json();
+      this.importAll(data);
+      localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
+      return data;
+    },
+
+    // Called once on app boot — loads latest cloud data before rendering
+    async loadOnBoot() {
+      const code = this.getShopCode();
+      if (!code) return; // first ever device — no cloud data yet
+      DB._updateSyncBadge('loading');
+      try {
+        await this.pull(code);
+        DB._updateSyncBadge('saved');
+      } catch (err) {
+        console.warn('Boot load failed:', err.message);
+        DB._updateSyncBadge('error');
+      }
+    }
+  },
+
+  // Update the sync badge in the topbar
+  _updateSyncBadge(state) {
+    const badge = document.getElementById('syncBadge');
+    if (!badge) return;
+    const states = {
+      saved:   { text: '☁ Saved',    cls: 'sync-badge synced' },
+      saving:  { text: '☁ Saving…',  cls: 'sync-badge syncing' },
+      loading: { text: '☁ Loading…', cls: 'sync-badge syncing' },
+      error:   { text: '☁ Offline',  cls: 'sync-badge error' },
+    };
+    const s = states[state] || states.saved;
+    badge.textContent = s.text;
+    badge.className = s.cls;
   },
 
   // ============================
@@ -36,14 +190,8 @@ const DB = {
 
     getOrInit() {
       let s = DB._get(DB.KEYS.stock);
-      if (!s.length) {
-        s = [{
-          id: DB._id(),
-          cyl_12kg: 0,
-          cyl_45kg: 0,
-          gas_kg: 0,
-          updatedAt: DB._today()
-        }];
+      if (!s || !s.length) {
+        s = [{ id: DB._id(), cyl_12kg: 0, cyl_45kg: 0, gas_kg: 0, updatedAt: DB._today() }];
         DB._set(DB.KEYS.stock, s);
       }
       return s[0];
@@ -51,7 +199,7 @@ const DB = {
 
     update(data) {
       const s = DB._get(DB.KEYS.stock);
-      if (s.length) {
+      if (s && s.length) {
         Object.assign(s[0], data, { updatedAt: DB._today() });
         DB._set(DB.KEYS.stock, s);
         return s[0];
@@ -62,18 +210,14 @@ const DB = {
       }
     },
 
-    // Deduct gas_kg when a sale is recorded
     deductGas(kg) {
       const s = DB.Stock.getOrInit();
-      const newKg = Math.max(0, (parseFloat(s.gas_kg) || 0) - (parseFloat(kg) || 0));
-      DB.Stock.update({ gas_kg: newKg });
+      DB.Stock.update({ gas_kg: Math.max(0, (parseFloat(s.gas_kg) || 0) - (parseFloat(kg) || 0)) });
     },
 
-    // Restore gas_kg when a sale is deleted
     restoreGas(kg) {
       const s = DB.Stock.getOrInit();
-      const newKg = (parseFloat(s.gas_kg) || 0) + (parseFloat(kg) || 0);
-      DB.Stock.update({ gas_kg: newKg });
+      DB.Stock.update({ gas_kg: (parseFloat(s.gas_kg) || 0) + (parseFloat(kg) || 0) });
     },
 
     getLogs() {
@@ -90,11 +234,12 @@ const DB = {
       const logs = DB.Stock.getLogs();
       logs.unshift({ id: DB._id(), date: DB._today(), ...entry });
       localStorage.setItem('fg_stock_logs', JSON.stringify(logs.slice(0, 200)));
+      DB.CloudSync.scheduleSave();
     }
   },
 
   // ============================
-  // CYLINDER INVENTORY (NEW)
+  // CYLINDER INVENTORY
   // ============================
   Cylinders: {
     getAll() { return DB._get(DB.KEYS.cylinders); },
@@ -105,19 +250,10 @@ const DB = {
 
     add(data) {
       const all = DB._get(DB.KEYS.cylinders);
-      // Check for duplicate cylinder number
-      if (data.number && all.find(c => c.number === data.number && c.type === data.type)) {
-        return null; // duplicate
-      }
-      const rec = {
-        id: DB._id(),
-        addedAt: DB._today(),
-        status: 'in_stock',
-        ...data
-      };
+      if (data.number && all.find(c => c.number === data.number && c.type === data.type)) return null;
+      const rec = { id: DB._id(), addedAt: DB._today(), status: 'in_stock', ...data };
       all.unshift(rec);
       DB._set(DB.KEYS.cylinders, all);
-      // Also update summary stock count
       const stock = DB.Stock.getOrInit();
       if (data.type === '12kg') DB.Stock.update({ cyl_12kg: stock.cyl_12kg + 1 });
       else if (data.type === '45kg') DB.Stock.update({ cyl_45kg: stock.cyl_45kg + 1 });
@@ -129,9 +265,8 @@ const DB = {
       const idx = all.findIndex(c => c.id === id);
       if (idx === -1) return false;
       const cyl = all[idx];
-      all.splice(idx, 1); // remove from inventory
+      all.splice(idx, 1);
       DB._set(DB.KEYS.cylinders, all);
-      // Update summary stock count
       const stock = DB.Stock.getOrInit();
       if (cyl.type === '12kg') DB.Stock.update({ cyl_12kg: Math.max(0, stock.cyl_12kg - 1) });
       else if (cyl.type === '45kg') DB.Stock.update({ cyl_45kg: Math.max(0, stock.cyl_45kg - 1) });
@@ -142,17 +277,13 @@ const DB = {
       const all = DB._get(DB.KEYS.cylinders);
       const cyl = all.find(c => c.id === id);
       if (!cyl) return;
-      const filtered = all.filter(c => c.id !== id);
-      DB._set(DB.KEYS.cylinders, filtered);
-      // Update summary stock count
+      DB._set(DB.KEYS.cylinders, all.filter(c => c.id !== id));
       const stock = DB.Stock.getOrInit();
       if (cyl.type === '12kg') DB.Stock.update({ cyl_12kg: Math.max(0, stock.cyl_12kg - 1) });
       else if (cyl.type === '45kg') DB.Stock.update({ cyl_45kg: Math.max(0, stock.cyl_45kg - 1) });
     },
 
-    count(type) {
-      return DB._get(DB.KEYS.cylinders).filter(c => c.type === type).length;
-    }
+    count(type) { return DB._get(DB.KEYS.cylinders).filter(c => c.type === type).length; }
   },
 
   // ============================
@@ -163,15 +294,9 @@ const DB = {
 
     add(data) {
       const all = DB._get(DB.KEYS.sales);
-      const rec = {
-        id: DB._id(),
-        date: DB._today(),
-        createdAt: new Date().toISOString(),
-        ...data
-      };
+      const rec = { id: DB._id(), date: DB._today(), createdAt: new Date().toISOString(), ...data };
       all.unshift(rec);
       DB._set(DB.KEYS.sales, all);
-      // Auto-deduct gas stock
       if (rec.qty_kg) DB.Stock.deductGas(rec.qty_kg);
       return rec;
     },
@@ -180,13 +305,9 @@ const DB = {
       const all = DB._get(DB.KEYS.sales);
       const idx = all.findIndex(r => r.id === id);
       if (idx !== -1) {
-        // Restore old qty then deduct new qty
-        const oldKg = parseFloat(all[idx].qty_kg) || 0;
-        const newKg = parseFloat(data.qty_kg) || 0;
-        const diff = newKg - oldKg;
+        const diff = (parseFloat(data.qty_kg) || 0) - (parseFloat(all[idx].qty_kg) || 0);
         if (diff > 0) DB.Stock.deductGas(diff);
         else if (diff < 0) DB.Stock.restoreGas(-diff);
-
         all[idx] = { ...all[idx], ...data, updatedAt: new Date().toISOString() };
         DB._set(DB.KEYS.sales, all);
         return all[idx];
@@ -201,22 +322,9 @@ const DB = {
       DB._set(DB.KEYS.sales, all.filter(r => r.id !== id));
     },
 
-    getByDate(date) {
-      return DB._get(DB.KEYS.sales).filter(r => r.date === date);
-    },
-
-    getByMonth(year, month) {
-      return DB._get(DB.KEYS.sales).filter(r => {
-        const d = new Date(r.date);
-        return d.getFullYear() === year && d.getMonth() + 1 === month;
-      });
-    },
-
-    getByYear(year) {
-      return DB._get(DB.KEYS.sales).filter(r => {
-        return new Date(r.date).getFullYear() === year;
-      });
-    }
+    getByDate(date)          { return DB._get(DB.KEYS.sales).filter(r => r.date === date); },
+    getByMonth(year, month)  { return DB._get(DB.KEYS.sales).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
+    getByYear(year)          { return DB._get(DB.KEYS.sales).filter(r => new Date(r.date).getFullYear() === year); }
   },
 
   // ============================
@@ -227,12 +335,7 @@ const DB = {
 
     add(data) {
       const all = DB._get(DB.KEYS.parts);
-      const rec = {
-        id: DB._id(),
-        date: DB._today(),
-        createdAt: new Date().toISOString(),
-        ...data
-      };
+      const rec = { id: DB._id(), date: DB._today(), createdAt: new Date().toISOString(), ...data };
       all.unshift(rec);
       DB._set(DB.KEYS.parts, all);
       return rec;
@@ -249,27 +352,11 @@ const DB = {
       return null;
     },
 
-    delete(id) {
-      const all = DB._get(DB.KEYS.parts).filter(r => r.id !== id);
-      DB._set(DB.KEYS.parts, all);
-    },
+    delete(id) { DB._set(DB.KEYS.parts, DB._get(DB.KEYS.parts).filter(r => r.id !== id)); },
 
-    getByDate(date) {
-      return DB._get(DB.KEYS.parts).filter(r => r.date === date);
-    },
-
-    getByMonth(year, month) {
-      return DB._get(DB.KEYS.parts).filter(r => {
-        const d = new Date(r.date);
-        return d.getFullYear() === year && d.getMonth() + 1 === month;
-      });
-    },
-
-    getByYear(year) {
-      return DB._get(DB.KEYS.parts).filter(r => {
-        return new Date(r.date).getFullYear() === year;
-      });
-    }
+    getByDate(date)          { return DB._get(DB.KEYS.parts).filter(r => r.date === date); },
+    getByMonth(year, month)  { return DB._get(DB.KEYS.parts).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); },
+    getByYear(year)          { return DB._get(DB.KEYS.parts).filter(r => new Date(r.date).getFullYear() === year); }
   },
 
   // ============================
@@ -280,12 +367,7 @@ const DB = {
 
     add(data) {
       const all = DB._get(DB.KEYS.expenses);
-      const rec = {
-        id: DB._id(),
-        date: DB._today(),
-        createdAt: new Date().toISOString(),
-        ...data
-      };
+      const rec = { id: DB._id(), date: DB._today(), createdAt: new Date().toISOString(), ...data };
       all.unshift(rec);
       DB._set(DB.KEYS.expenses, all);
       return rec;
@@ -302,111 +384,32 @@ const DB = {
       return null;
     },
 
-    delete(id) {
-      const all = DB._get(DB.KEYS.expenses).filter(r => r.id !== id);
-      DB._set(DB.KEYS.expenses, all);
-    },
+    delete(id) { DB._set(DB.KEYS.expenses, DB._get(DB.KEYS.expenses).filter(r => r.id !== id)); },
 
-    getByDate(date) {
-      return DB._get(DB.KEYS.expenses).filter(r => r.date === date);
-    },
-
-    getByMonth(year, month) {
-      return DB._get(DB.KEYS.expenses).filter(r => {
-        const d = new Date(r.date);
-        return d.getFullYear() === year && d.getMonth() + 1 === month;
-      });
-    }
+    getByDate(date)          { return DB._get(DB.KEYS.expenses).filter(r => r.date === date); },
+    getByMonth(year, month)  { return DB._get(DB.KEYS.expenses).filter(r => { const d = new Date(r.date); return d.getFullYear() === year && d.getMonth() + 1 === month; }); }
   },
 
   // ============================
-  // CLOUD SYNC (via JSONBlob API — free, no account needed)
+  // LEGACY SYNC (kept so Cloud Sync page still works)
   // ============================
   Sync: {
     JSONBLOB_API: 'https://jsonblob.com/api/jsonBlob',
+    getSyncCode()  { return DB.CloudSync.getShopCode(); },
+    getLastSync()  { return localStorage.getItem(DB.KEYS.lastSync) || null; },
+    setSyncCode(c) { DB.CloudSync.setShopCode(c); },
+    exportAll()    { return DB.CloudSync.exportAll(); },
+    importAll(d)   { return DB.CloudSync.importAll(d); },
 
-    getSyncCode() {
-      return localStorage.getItem(DB.KEYS.syncCode) || null;
-    },
-
-    setSyncCode(code) {
-      localStorage.setItem(DB.KEYS.syncCode, code);
-    },
-
-    getLastSync() {
-      return localStorage.getItem(DB.KEYS.lastSync) || null;
-    },
-
-    setLastSync() {
-      localStorage.setItem(DB.KEYS.lastSync, new Date().toISOString());
-    },
-
-    // Export all local data
-    exportAll() {
-      return {
-        stock: localStorage.getItem(DB.KEYS.stock),
-        sales: localStorage.getItem(DB.KEYS.sales),
-        parts: localStorage.getItem(DB.KEYS.parts),
-        expenses: localStorage.getItem(DB.KEYS.expenses),
-        cylinders: localStorage.getItem(DB.KEYS.cylinders),
-        stock_logs: localStorage.getItem('fg_stock_logs'),
-        prev_months: localStorage.getItem('fg_prev_months'),
-        exportedAt: new Date().toISOString()
-      };
-    },
-
-    // Import data from a cloud snapshot
-    importAll(data) {
-      if (data.stock) localStorage.setItem(DB.KEYS.stock, data.stock);
-      if (data.sales) localStorage.setItem(DB.KEYS.sales, data.sales);
-      if (data.parts) localStorage.setItem(DB.KEYS.parts, data.parts);
-      if (data.expenses) localStorage.setItem(DB.KEYS.expenses, data.expenses);
-      if (data.cylinders) localStorage.setItem(DB.KEYS.cylinders, data.cylinders);
-      if (data.stock_logs) localStorage.setItem('fg_stock_logs', data.stock_logs);
-      if (data.prev_months) localStorage.setItem('fg_prev_months', data.prev_months);
-    },
-
-    // Push local data to cloud (creates new blob or updates existing)
     async push() {
-      const payload = JSON.stringify(DB.Sync.exportAll());
-      const code = DB.Sync.getSyncCode();
-      if (code) {
-        // Update existing blob
-        const res = await fetch(`${DB.Sync.JSONBLOB_API}/${code}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: payload
-        });
-        if (!res.ok) throw new Error('Sync push failed');
-        DB.Sync.setLastSync();
-        return code;
-      } else {
-        // Create new blob
-        const res = await fetch(DB.Sync.JSONBLOB_API, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
-          body: payload
-        });
-        if (!res.ok) throw new Error('Sync create failed');
-        const location = res.headers.get('Location') || '';
-        const newCode = location.split('/').pop();
-        DB.Sync.setSyncCode(newCode);
-        DB.Sync.setLastSync();
-        return newCode;
-      }
+      await DB.CloudSync.push();
+      return DB.CloudSync.getShopCode();
     },
 
-    // Pull data from cloud using a sync code
     async pull(code) {
-      const res = await fetch(`${DB.Sync.JSONBLOB_API}/${code}`, {
-        headers: { 'Accept': 'application/json' }
-      });
-      if (!res.ok) throw new Error('Sync code not found');
-      const data = await res.json();
-      DB.Sync.importAll(data);
-      DB.Sync.setSyncCode(code);
-      DB.Sync.setLastSync();
-      return data;
+      await DB.CloudSync.pull(code);
+      DB.CloudSync.setShopCode(code);
+      return {};
     }
   },
 
@@ -421,7 +424,7 @@ const DB = {
     return Number(n).toLocaleString('en-PK', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
   },
 
-  today() { return new Date().toISOString().split('T')[0]; },
+  today()  { return new Date().toISOString().split('T')[0]; },
 
   nowYM() {
     const d = new Date();
@@ -434,26 +437,36 @@ const DB = {
 // ============================
 DB.PrevMonth = {
   KEY: 'fg_prev_months',
-  getAll() { try { return JSON.parse(localStorage.getItem(this.KEY)) || []; } catch { return []; } },
+
+  getAll() {
+    try { return JSON.parse(localStorage.getItem(this.KEY)) || []; }
+    catch { return []; }
+  },
+
   add(data) {
     const all = this.getAll();
     const rec = { id: DB._id(), createdAt: new Date().toISOString(), ...data };
     all.unshift(rec);
     localStorage.setItem(this.KEY, JSON.stringify(all));
+    DB.CloudSync.scheduleSave();
     return rec;
   },
+
   update(id, data) {
     const all = this.getAll();
     const idx = all.findIndex(r => r.id === id);
     if (idx !== -1) {
       all[idx] = { ...all[idx], ...data, updatedAt: new Date().toISOString() };
       localStorage.setItem(this.KEY, JSON.stringify(all));
+      DB.CloudSync.scheduleSave();
       return all[idx];
     }
     return null;
   },
+
   delete(id) {
     const all = this.getAll().filter(r => r.id !== id);
     localStorage.setItem(this.KEY, JSON.stringify(all));
+    DB.CloudSync.scheduleSave();
   }
 };
